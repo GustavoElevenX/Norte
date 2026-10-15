@@ -1,0 +1,174 @@
+"use server";
+
+import { cookies } from "next/headers";
+import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import { getWorkspace } from "@/lib/auth";
+import { fromFortalezaLocal } from "@/lib/dates";
+import { createClient } from "@/lib/supabase/server";
+import { clientSchema, companySchema, formString, projectSchema, taskSchema, uuid } from "@/lib/validation";
+import { validateNorteSeed } from "@/lib/norte-seed";
+
+function fail(path: string, message: string): never {
+  redirect(`${path}?error=${encodeURIComponent(message)}`);
+}
+function value(form: FormData, key: string) { return formString(form, key); }
+function refresh() {
+  ["/hoje", "/semana", "/empresas", "/clientes", "/projetos", "/tarefas", "/inbox", "/configuracoes/carga-inicial"].forEach((path) => revalidatePath(path));
+}
+export async function runNorteSeed(form: FormData) {
+  const { supabase } = await getWorkspace();
+  const dryRun = value(form, "mode") !== "apply";
+  const payload = validateNorteSeed();
+  const { data, error } = await supabase.rpc("import_norte_data", { payload, dry_run: dryRun });
+  if (error || !data) fail("/configuracoes/carga-inicial", "Não foi possível executar a carga. Confira a prévia e tente novamente.");
+  refresh();
+  redirect(`/configuracoes/carga-inicial?result=${encodeURIComponent(JSON.stringify(data))}`);
+}
+export async function signIn(form: FormData) {
+  const supabase = await createClient();
+  const { error } = await supabase.auth.signInWithPassword({ email: value(form, "email"), password: value(form, "password") });
+  if (error) fail("/login", "E-mail ou senha inválidos.");
+  redirect("/hoje");
+}
+export async function signUp(form: FormData) {
+  const supabase = await createClient();
+  const email = value(form, "email");
+  const password = value(form, "password");
+  if (!email.includes("@") || password.length < 8) fail("/cadastro", "Informe um e-mail válido e senha com ao menos 8 caracteres.");
+  const { data, error } = await supabase.auth.signUp({ email, password });
+  if (error) fail("/cadastro", error.message);
+  if (!data.session) redirect("/login?message=Confira seu e-mail para confirmar o cadastro.");
+  redirect("/hoje");
+}
+export async function signOut() {
+  const supabase = await createClient();
+  await supabase.auth.signOut();
+  redirect("/login");
+}
+
+export async function setCompanyFilter(form: FormData) {
+  const id = value(form, "company_id");
+  const { supabase, workspace } = await getWorkspace();
+  if (id) {
+    if (!uuid.safeParse(id).success) fail("/hoje", "Empresa inválida.");
+    const { data } = await supabase.from("companies").select("id").eq("workspace_id", workspace.id).eq("id", id).single();
+    if (!data) fail("/hoje", "Empresa não encontrada.");
+  }
+  (await cookies()).set("company_filter", id, { httpOnly: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 24 * 30 });
+  refresh();
+  redirect("/hoje");
+}
+
+export async function saveCompany(form: FormData) {
+  const { supabase, workspace } = await getWorkspace();
+  const id = value(form, "id");
+  const parsed = companySchema.safeParse(Object.fromEntries(["name", "segment", "description", "cnpj", "color", "status"].map((key) => [key, value(form, key)])));
+  if (!parsed.success) fail(id ? `/empresas/${id}` : "/empresas", "Revise os campos da empresa.");
+  const query = id
+    ? supabase.from("companies").update(parsed.data).eq("id", id).eq("workspace_id", workspace.id).select("id").single()
+    : supabase.from("companies").insert({ ...parsed.data, workspace_id: workspace.id }).select("id").single();
+  const { data, error } = await query;
+  if (error || !data) fail(id ? `/empresas/${id}` : "/empresas", error?.message || "Não foi possível salvar.");
+  refresh();
+  redirect(`/empresas/${data.id}`);
+}
+
+export async function saveClient(form: FormData) {
+  const { supabase, workspace } = await getWorkspace();
+  const id = value(form, "id");
+  const parsed = clientSchema.safeParse(Object.fromEntries(["name", "company_id", "notes", "email", "phone", "status"].map((key) => [key, value(form, key)])));
+  if (!parsed.success) fail(id ? `/clientes/${id}` : "/clientes", "Revise os campos do cliente.");
+  const payload = { ...parsed.data, email: parsed.data.email || null, phone: parsed.data.phone || null };
+  const query = id
+    ? supabase.from("clients").update(payload).eq("id", id).eq("workspace_id", workspace.id).select("id").single()
+    : supabase.from("clients").insert({ ...payload, workspace_id: workspace.id }).select("id").single();
+  const { data, error } = await query;
+  if (error || !data) fail(id ? `/clientes/${id}` : "/clientes", error?.message || "Não foi possível salvar.");
+  refresh();
+  redirect(`/clientes/${data.id}`);
+}
+
+export async function saveProject(form: FormData) {
+  const { supabase, workspace } = await getWorkspace();
+  const id = value(form, "id");
+  const parsed = projectSchema.safeParse(Object.fromEntries(["name", "company_id", "client_id", "description", "goal_text", "status"].map((key) => [key, value(form, key)])));
+  if (!parsed.success) fail(id ? `/projetos/${id}` : "/projetos", "Revise os campos do projeto.");
+  if (!parsed.data.company_id && !id) fail("/projetos/novo", "Selecione uma empresa para o novo projeto.");
+  if (!parsed.data.company_id && parsed.data.client_id) fail(id ? `/projetos/${id}` : "/projetos", "Cliente requer empresa.");
+  const query = id
+    ? supabase.from("projects").update(parsed.data).eq("id", id).eq("workspace_id", workspace.id).select("id").single()
+    : supabase.from("projects").insert({ ...parsed.data, workspace_id: workspace.id }).select("id").single();
+  const { data, error } = await query;
+  if (error || !data) fail(id ? `/projetos/${id}` : "/projetos", error?.message || "Não foi possível salvar.");
+  refresh();
+  redirect(`/projetos/${data.id}`);
+}
+
+export async function saveTask(form: FormData) {
+  const { supabase, workspace } = await getWorkspace();
+  const id = value(form, "id");
+  const parsed = taskSchema.safeParse(Object.fromEntries(["title", "description", "company_id", "project_id", "client_id", "status", "priority", "due_at", "estimated_minutes"].map((key) => [key, value(form, key)])));
+  if (!parsed.success) fail(id ? `/tarefas/${id}` : "/tarefas", "Revise os campos da tarefa.");
+  const { due_at, estimated_minutes, ...fields } = parsed.data;
+  if (fields.client_id && !fields.company_id) fail(id ? `/tarefas/${id}` : "/tarefas", "Selecione a empresa do cliente.");
+  if (fields.project_id && !fields.company_id) {
+    const { data: selectedProject } = await supabase.from("projects").select("company_id").eq("workspace_id", workspace.id).eq("id", fields.project_id).single();
+    if (!selectedProject || selectedProject.company_id) fail(id ? `/tarefas/${id}` : "/tarefas", "Selecione a empresa do projeto.");
+  }
+  const minutes = estimated_minutes ? Number(estimated_minutes) : null;
+  if (minutes !== null && (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440)) fail(id ? `/tarefas/${id}` : "/tarefas", "Duração deve estar entre 1 e 1440 minutos.");
+  const due = due_at ? fromFortalezaLocal(due_at) : null;
+  if (due && Number.isNaN(due.getTime())) fail(id ? `/tarefas/${id}` : "/tarefas", "Prazo inválido.");
+  let completedAt: string | null = null;
+  if (fields.status === "done") {
+    const { data: previous } = id ? await supabase.from("tasks").select("status, completed_at").eq("id", id).eq("workspace_id", workspace.id).single() : { data: null };
+    completedAt = previous?.status === "done" && previous.completed_at ? previous.completed_at : new Date().toISOString();
+  }
+  const payload = { ...fields, due_at: due?.toISOString() ?? null, estimated_minutes: minutes, completed_at: completedAt };
+  const query = id
+    ? supabase.from("tasks").update(payload).eq("id", id).eq("workspace_id", workspace.id).select("id").single()
+    : supabase.from("tasks").insert({ ...payload, workspace_id: workspace.id }).select("id").single();
+  const { data, error } = await query;
+  if (error || !data) fail(id ? `/tarefas/${id}` : "/tarefas", error?.message || "Não foi possível salvar.");
+  refresh();
+  redirect(`/tarefas/${data.id}`);
+}
+
+export async function completeTask(form: FormData) {
+  const { supabase, workspace } = await getWorkspace();
+  const id = value(form, "id");
+  if (!uuid.safeParse(id).success) fail("/tarefas", "Tarefa inválida.");
+  const { data, error } = await supabase.from("tasks").update({ status: "done", completed_at: new Date().toISOString() }).eq("id", id).eq("workspace_id", workspace.id).neq("status", "done").select("id").single();
+  if (error || !data) fail("/tarefas", error?.message || "Tarefa não encontrada.");
+  refresh();
+}
+
+export async function captureInbox(form: FormData) {
+  const { supabase, workspace } = await getWorkspace();
+  const rawText = value(form, "raw_text").trim();
+  if (!rawText || rawText.length > 2000) fail("/inbox", "Digite uma demanda de até 2000 caracteres.");
+  const { data, error } = await supabase.from("inbox_items").insert({ workspace_id: workspace.id, raw_text: rawText }).select("id").single();
+  if (error || !data) fail("/inbox", error?.message || "Não foi possível capturar a demanda.");
+  refresh();
+  redirect("/inbox");
+}
+
+export async function convertInbox(form: FormData) {
+  const { supabase } = await getWorkspace();
+  const id = value(form, "id");
+  if (!uuid.safeParse(id).success) fail("/inbox", "Demanda inválida.");
+  const { data: taskId, error } = await supabase.rpc("convert_inbox_to_task", { item_id: id });
+  if (error || !taskId) fail("/inbox", error?.message || "Não foi possível converter.");
+  refresh();
+  redirect(`/tarefas/${taskId}`);
+}
+
+export async function dismissInbox(form: FormData) {
+  const { supabase, workspace } = await getWorkspace();
+  const id = value(form, "id");
+  if (!uuid.safeParse(id).success) fail("/inbox", "Demanda inválida.");
+  const { data, error } = await supabase.from("inbox_items").update({ status: "dismissed" }).eq("id", id).eq("workspace_id", workspace.id).eq("status", "open").select("id").single();
+  if (error || !data) fail("/inbox", error?.message || "Demanda não encontrada.");
+  refresh();
+}
