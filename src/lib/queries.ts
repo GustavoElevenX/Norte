@@ -49,3 +49,24 @@ export const getDemandContexts = cache(async function getDemandContexts() {
   if (error) throw new Error(error.message);
   return data ?? [];
 });
+
+export const getGoals = cache(async function getGoals() {
+  const { supabase, workspace } = await getWorkspace();
+  const { data, error } = await supabase.from("goals").select("*").eq("workspace_id", workspace.id).order("ends_on");
+  if (error) throw new Error(error.message);
+  return data ?? [];
+});
+
+export const getPerformanceData = cache(async function getPerformanceData() {
+  const { supabase, workspace } = await getWorkspace();
+  const [planning, completions, inbox, executions, checkins] = await Promise.all([
+    supabase.from("task_planning_snapshots").select("task_id,planned_for,company_id,project_id,priority").eq("workspace_id", workspace.id).limit(5000),
+    supabase.from("task_completion_events").select("task_id,completed_at,company_id,project_id,priority,due_at").eq("workspace_id", workspace.id).limit(5000),
+    supabase.from("inbox_items").select("created_at,status").eq("workspace_id", workspace.id).limit(5000),
+    supabase.from("calendar_events").select("completed_at,actual_minutes,company_id,project_id").eq("workspace_id", workspace.id).eq("status", "completed").limit(5000),
+    supabase.from("goal_checkins").select("id,goal_id,recorded_on,actual_value,note,created_at").eq("workspace_id", workspace.id).limit(5000),
+  ]);
+  const error = planning.error || completions.error || inbox.error || executions.error || checkins.error;
+  if (error) throw new Error(error.message);
+  return { planning: planning.data ?? [], completions: completions.data ?? [], inbox: inbox.data ?? [], executions: executions.data ?? [], checkins: checkins.data ?? [] };
+});

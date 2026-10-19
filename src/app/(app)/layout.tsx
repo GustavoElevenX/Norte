@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Building2, CalendarDays, CheckSquare2, FolderKanban, House, Inbox, LogOut, Users } from "lucide-react";
+import { Building2, CalendarDays, ChartNoAxesCombined, CheckSquare2, FolderKanban, House, Inbox, LogOut, Sparkles, Users } from "lucide-react";
 import { signOut, setCompanyFilter } from "@/app/actions";
 import { getWorkspace } from "@/lib/auth";
 import { getCompanies } from "@/lib/queries";
@@ -14,6 +14,8 @@ const links = [
   { href: "/projetos", label: "Projetos", icon: FolderKanban },
   { href: "/empresas", label: "Empresas", icon: Building2 },
   { href: "/clientes", label: "Clientes", icon: Users },
+  { href: "/assistente", label: "Assistente", icon: Sparkles },
+  { href: "/performance", label: "Performance", icon: ChartNoAxesCombined },
 ];
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {

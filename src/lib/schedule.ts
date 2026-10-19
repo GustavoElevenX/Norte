@@ -34,13 +34,16 @@ export function addDays(date: string, days: number) {
 
 export async function getSchedule(dates: string[]) {
   const { supabase, workspace } = await getWorkspace();
-  const [{ data: rules, error: ruleError }, { data: exceptions, error: exceptionError }] = await Promise.all([
+  const [{ data: rules, error: ruleError }, { data: exceptions, error: exceptionError }, { data: events, error: eventError }] = await Promise.all([
     supabase.from("weekly_recurrence_rules").select("*").eq("workspace_id", workspace.id).order("weekday").order("starts_at"),
     supabase.from("weekly_recurrence_exceptions").select("*").eq("workspace_id", workspace.id).gte("occurs_on", dates[0]).lte("occurs_on", dates.at(-1)!),
+    supabase.from("calendar_events").select("*").eq("workspace_id", workspace.id).neq("status", "cancelled")
+      .gte("starts_at", `${dates[0]}T00:00:00-03:00`).lt("starts_at", `${addDays(dates.at(-1)!, 1)}T00:00:00-03:00`),
   ]);
-  if (ruleError || exceptionError) throw new Error(ruleError?.message || exceptionError?.message);
+  if (ruleError || exceptionError || eventError) throw new Error(ruleError?.message || exceptionError?.message || eventError?.message);
   return dates.map((date) => ({
     date,
+    events: (events ?? []).filter((event) => localDate(new Date(event.starts_at), workspace.timezone) === date).sort((a, b) => a.starts_at.localeCompare(b.starts_at)),
     slots: (rules ?? []).filter((rule) => rule.weekday === isoWeekday(date) && rule.effective_from <= date).flatMap((rule) => {
       const exception = exceptions?.find((item) => item.rule_id === rule.id && item.occurs_on === date);
       if (exception?.action === "skip") return [];

@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test tests/domain.test.mjs tests/seed.test.mjs",
+    "test": "node --test tests/domain.test.mjs tests/seed.test.mjs tests/availability.test.mjs tests/performance.test.mjs",
     "test:rls": "node --test tests/rls.test.mjs"
   },
   "dependencies": {

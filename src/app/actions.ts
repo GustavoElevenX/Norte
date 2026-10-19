@@ -8,13 +8,110 @@ import { fromFortalezaLocal } from "@/lib/dates";
 import { createClient } from "@/lib/supabase/server";
 import { clientSchema, companySchema, formString, projectSchema, taskSchema, uuid } from "@/lib/validation";
 import { validateNorteSeed } from "@/lib/norte-seed";
+import { weeklyCsmDemands, weeklyCsmDueAt, weeklyCsmSeedPrefix } from "@/lib/weekly-csm-demands";
 
 function fail(path: string, message: string): never {
   redirect(`${path}?error=${encodeURIComponent(message)}`);
 }
 function value(form: FormData, key: string) { return formString(form, key); }
 function refresh() {
-  ["/hoje", "/semana", "/empresas", "/clientes", "/projetos", "/tarefas", "/inbox", "/configuracoes/carga-inicial"].forEach((path) => revalidatePath(path));
+  ["/hoje", "/semana", "/empresas", "/clientes", "/projetos", "/tarefas", "/inbox", "/configuracoes/carga-inicial", "/assistente", "/performance"].forEach((path) => revalidatePath(path));
+}
+export async function importWeeklyCsmDemands() {
+  const { supabase, workspace } = await getWorkspace();
+  const { data: company, error: companyError } = await supabase.from("companies")
+    .select("id").eq("workspace_id", workspace.id).eq("seed_key", "csm").maybeSingle();
+  if (companyError || !company) fail("/semana", "A empresa CSM precisa estar cadastrada pela carga inicial antes de importar as tarefas.");
+  const { data: existing, error: existingError } = await supabase.from("tasks")
+    .select("title,seed_key").eq("workspace_id", workspace.id).eq("company_id", company.id);
+  if (existingError) fail("/semana", "Não foi possível conferir as tarefas existentes.");
+  const existingKeys = new Set((existing ?? []).map((task) => task.seed_key));
+  const existingTitles = new Set((existing ?? []).map((task) => task.title.toLocaleLowerCase("pt-BR")));
+  let added = 0;
+  for (const demand of weeklyCsmDemands) {
+    const seedKey = `${weeklyCsmSeedPrefix}${demand.key}`;
+    if (existingKeys.has(seedKey) || existingTitles.has(demand.title.toLocaleLowerCase("pt-BR"))) continue;
+    const { error } = await supabase.from("tasks").insert({
+      workspace_id: workspace.id,
+      company_id: company.id,
+      seed_key: seedKey,
+      title: demand.title,
+      description: `Demanda da planilha CSM de 19/10/2026. Prioridade original: ${demand.sourcePriority}. ${demand.priority === "P1" ? "Prioridade máxima definida pelo usuário." : ""}`.trim(),
+      priority: demand.priority,
+      due_at: weeklyCsmDueAt,
+      status: "todo",
+    });
+    if (error && error.code !== "23505") fail("/semana", `Não foi possível importar todas as tarefas: ${error.message}`);
+    if (!error) added++;
+  }
+  refresh();
+  redirect(`/semana?message=${encodeURIComponent(`${added} tarefa(s) adicionada(s) para até 23/10.`)}`);
+}
+export async function reserveTaskSlot(form: FormData) {
+  const { supabase, workspace } = await getWorkspace();
+  const id = value(form, "task_id");
+  if (!uuid.safeParse(id).success) fail("/tarefas", "Tarefa inválida.");
+  const { data: task } = await supabase.from("tasks").select("id,title,company_id,project_id,estimated_minutes").eq("workspace_id", workspace.id).eq("id", id).single();
+  if (!task) fail("/tarefas", "Tarefa não encontrada.");
+  const start = new Date(value(form, "starts_at"));
+  const end = new Date(value(form, "ends_at"));
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end.getTime() - start.getTime() !== task.estimated_minutes * 60000)
+    fail(`/tarefas/${id}`, "Horário ou duração inválidos.");
+  const { error } = await supabase.rpc("save_calendar_event", { p_workspace_id: workspace.id, p_event_id: null, p_event_type: "execution", p_title: task.title,
+    p_company_id: task.company_id, p_project_id: task.project_id, p_task_id: id, p_starts_at: start.toISOString(), p_ends_at: end.toISOString(), p_allow_protected_override: false });
+  if (error) fail(`/tarefas/${id}`, error.message);
+  refresh();
+  redirect(`/tarefas/${id}?message=Bloco de execução reservado.`);
+}
+
+export async function saveAppointment(form: FormData) {
+  const { supabase, workspace } = await getWorkspace();
+  const id = value(form, "id");
+  const title = value(form, "title").trim();
+  const companyId = value(form, "company_id") || null;
+  const starts = fromFortalezaLocal(value(form, "starts_at"));
+  const ends = fromFortalezaLocal(value(form, "ends_at"));
+  if ((id && !uuid.safeParse(id).success) || (companyId && !uuid.safeParse(companyId).success) || !title || title.length > 240 || Number.isNaN(starts.getTime()) || Number.isNaN(ends.getTime()))
+    fail("/semana", "Revise os dados do compromisso.");
+  const { error } = await supabase.rpc("save_calendar_event", { p_workspace_id: workspace.id, p_event_id: id || null, p_event_type: "appointment", p_title: title,
+    p_company_id: companyId, p_project_id: null, p_task_id: null, p_starts_at: starts.toISOString(), p_ends_at: ends.toISOString(), p_allow_protected_override: value(form, "approve_protected") === "yes" });
+  if (error) fail("/semana", error.message);
+  refresh();
+  redirect("/semana?message=Compromisso salvo.");
+}
+export async function saveRecurrenceException(form: FormData) {
+  const { supabase, workspace } = await getWorkspace();
+  const ruleId = value(form, "rule_id");
+  const date = value(form, "date");
+  const action = value(form, "action");
+  const start = value(form, "starts_at");
+  const end = value(form, "ends_at");
+  if (!uuid.safeParse(ruleId).success || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !["skip", "override", "restore"].includes(action)
+    || (action === "override" && (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end)))) fail("/semana", "Exceção inválida.");
+  const { error } = await supabase.rpc("save_recurrence_exception", { p_workspace_id: workspace.id, p_rule_id: ruleId, p_date: date, p_action: action,
+    p_start: action === "override" ? start : null, p_end: action === "override" ? end : null, p_title: null, p_approve_protected: value(form, "approve_protected") === "yes" });
+  if (error) fail("/semana", error.message);
+  refresh();
+  redirect("/semana?message=Ocorrência atualizada.");
+}
+export async function cancelCalendarEvent(form: FormData) {
+  const { supabase, workspace } = await getWorkspace();
+  const id = value(form, "id");
+  if (!uuid.safeParse(id).success) fail("/semana", "Evento inválido.");
+  const { error } = await supabase.rpc("cancel_calendar_event", { p_workspace_id: workspace.id, p_event_id: id });
+  if (error) fail("/semana", error.message);
+  refresh();
+  redirect("/semana?message=Reserva cancelada.");
+}
+export async function finishExecution(form: FormData) {
+  const { supabase, workspace } = await getWorkspace();
+  const id = value(form, "id");
+  const actual = Number(value(form, "actual_minutes"));
+  if (!uuid.safeParse(id).success || !Number.isInteger(actual) || actual < 1 || actual > 720) fail("/semana", "Informe a duração realizada.");
+  const { error } = await supabase.rpc("finish_calendar_execution", { p_workspace_id: workspace.id, p_event_id: id, p_actual_minutes: actual });
+  if (error) fail("/semana", error.message);
+  refresh();
+  redirect("/semana?message=Execução registrada.");
 }
 export async function runNorteSeed(form: FormData) {
   const { supabase } = await getWorkspace();
