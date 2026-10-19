@@ -6,6 +6,7 @@ import { EmptyState, formatDate, PageHeading } from "@/components/ui";
 import { selectedCompanyId } from "@/lib/filter";
 import { getCompanies, getGoals, getInbox, getPerformanceData, getTasks } from "@/lib/queries";
 import { addDays, companyScheduleColors, getSchedule, localDate } from "@/lib/schedule";
+import { weeklyCsmDemands, weeklyCsmSeedPrefix } from "@/lib/weekly-csm-demands";
 
 export default async function Hoje() {
   const today = localDate();
@@ -21,8 +22,11 @@ export default async function Hoje() {
   const next = schedule.flatMap((day) => day.slots.map((slot) => ({ ...slot, date: day.date }))).find((slot) => (slot.date > today || slot.ends_at.slice(0, 5) > localTime) && (!companyId || slot.company_id === companyId));
   const brief = dailyBriefing(allTasks, schedule[0], performance.completions, now, companyId);
   const activeGoals = goals.filter((goal) => goal.status === "active" && goal.starts_on <= today && goal.ends_on >= today && (!companyId || goal.company_id === companyId));
+  const csmCompany = companies.find((company) => company.seed_key === "csm");
+  const showWeeklyCsm = today >= "2026-10-19" && today <= "2026-10-23" && csmCompany && (!companyId || companyId === csmCompany.id);
   return <><PageHeading title="Hoje" description={new Intl.DateTimeFormat("pt-BR", { dateStyle: "full", timeZone: "America/Fortaleza" }).format(now)} />
     <section className="hero-empty" id="captura"><div className="document-icon" aria-hidden="true">▤</div><h2>{tasks.length ? "O que entra agora?" : "Seu dia começa aqui"}</h2><p>Capture rapidamente uma demanda para organizar depois.</p><form action={captureInbox} className="capture-form"><input name="raw_text" aria-label="Nova demanda" placeholder="O que precisa ser feito?" required maxLength={2000} /><button className="button primary" type="submit">Adicionar à inbox</button></form></section>
+    {showWeeklyCsm ? <section className="section"><div className="section-heading"><h2>Prioridades CSM · até 23/10</h2><Link href="/semana">Ver semana</Link></div><p className="muted">As duas primeiras são a prioridade máxima. Em seguida vêm as demais demandas P4 e depois P3 da planilha.</p><div className="list">{weeklyCsmDemands.map((demand) => { const task = allTasks.find((item) => item.seed_key === `${weeklyCsmSeedPrefix}${demand.key}` || item.title.toLocaleLowerCase("pt-BR") === demand.title.toLocaleLowerCase("pt-BR")); return <div className="list-row" key={demand.key}><div>{task ? <Link className="row-title" href={`/tarefas/${task.id}`}>{demand.title}</Link> : <strong>{demand.title}</strong>}<p>{demand.priority === "P1" ? "Prioridade máxima" : `Planilha ${demand.sourcePriority}`} · {task?.status === "done" ? "Concluída" : "Pendente"}</p></div></div>; })}</div></section> : null}
     <section className="section"><div className="section-heading"><h2>Agenda de hoje</h2><Link href="/semana">Minha Semana</Link></div>
       {next ? <p className="next-routine"><strong>Próximo bloco{next.date > today ? ` (${next.date.slice(8, 10)}/${next.date.slice(5, 7)})` : ""}:</strong> {next.starts_at.slice(0, 5)}–{next.ends_at.slice(0, 5)} · {next.title}</p> : <p className="muted">Sem próximo bloco fixo.</p>}
       <ScheduleList slots={schedule[0].slots} events={schedule[0].events} companyId={companyId} colors={companyScheduleColors(companies)} /></section>

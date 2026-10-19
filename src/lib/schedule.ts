@@ -1,4 +1,5 @@
 import { getWorkspace } from "@/lib/auth";
+import { weeklyCsmDemands } from "@/lib/weekly-csm-demands";
 
 export const dayLabels = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"];
 
@@ -47,7 +48,11 @@ export async function getSchedule(dates: string[]) {
     slots: (rules ?? []).filter((rule) => rule.weekday === isoWeekday(date) && rule.effective_from <= date).flatMap((rule) => {
       const exception = exceptions?.find((item) => item.rule_id === rule.id && item.occurs_on === date);
       if (exception?.action === "skip") return [];
-      return [{ ...rule, title: exception?.title ?? rule.title, starts_at: exception?.starts_at ?? rule.starts_at, ends_at: exception?.ends_at ?? rule.ends_at, project_id: exception?.project_id ?? rule.project_id }];
+      const weeklyFocus = date === "2026-10-19" && !exception?.title
+        ? rule.seed_key === "routine-mo-1000" ? weeklyCsmDemands[0].title
+          : rule.seed_key === "routine-mo-1300" ? weeklyCsmDemands[1].title : null
+        : null;
+      return [{ ...rule, title: exception?.title ?? weeklyFocus ?? rule.title, starts_at: exception?.starts_at ?? rule.starts_at, ends_at: exception?.ends_at ?? rule.ends_at, project_id: weeklyFocus ? null : exception?.project_id ?? rule.project_id }];
     }).sort((a, b) => a.starts_at.localeCompare(b.starts_at)),
   }));
 }

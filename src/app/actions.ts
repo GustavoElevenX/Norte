@@ -8,7 +8,7 @@ import { fromFortalezaLocal } from "@/lib/dates";
 import { createClient } from "@/lib/supabase/server";
 import { clientSchema, companySchema, formString, projectSchema, taskSchema, uuid } from "@/lib/validation";
 import { validateNorteSeed } from "@/lib/norte-seed";
-import { weeklyCsmDemands, weeklyCsmDueAt, weeklyCsmSeedPrefix } from "@/lib/weekly-csm-demands";
+import { ensureWeeklyCsmDemands } from "@/lib/weekly-csm-import";
 
 function fail(path: string, message: string): never {
   redirect(`${path}?error=${encodeURIComponent(message)}`);
@@ -19,31 +19,7 @@ function refresh() {
 }
 export async function importWeeklyCsmDemands() {
   const { supabase, workspace } = await getWorkspace();
-  const { data: company, error: companyError } = await supabase.from("companies")
-    .select("id").eq("workspace_id", workspace.id).eq("seed_key", "csm").maybeSingle();
-  if (companyError || !company) fail("/semana", "A empresa CSM precisa estar cadastrada pela carga inicial antes de importar as tarefas.");
-  const { data: existing, error: existingError } = await supabase.from("tasks")
-    .select("title,seed_key").eq("workspace_id", workspace.id).eq("company_id", company.id);
-  if (existingError) fail("/semana", "Não foi possível conferir as tarefas existentes.");
-  const existingKeys = new Set((existing ?? []).map((task) => task.seed_key));
-  const existingTitles = new Set((existing ?? []).map((task) => task.title.toLocaleLowerCase("pt-BR")));
-  let added = 0;
-  for (const demand of weeklyCsmDemands) {
-    const seedKey = `${weeklyCsmSeedPrefix}${demand.key}`;
-    if (existingKeys.has(seedKey) || existingTitles.has(demand.title.toLocaleLowerCase("pt-BR"))) continue;
-    const { error } = await supabase.from("tasks").insert({
-      workspace_id: workspace.id,
-      company_id: company.id,
-      seed_key: seedKey,
-      title: demand.title,
-      description: `Demanda da planilha CSM de 19/10/2026. Prioridade original: ${demand.sourcePriority}. ${demand.priority === "P1" ? "Prioridade máxima definida pelo usuário." : ""}`.trim(),
-      priority: demand.priority,
-      due_at: weeklyCsmDueAt,
-      status: "todo",
-    });
-    if (error && error.code !== "23505") fail("/semana", `Não foi possível importar todas as tarefas: ${error.message}`);
-    if (!error) added++;
-  }
+  const added = await ensureWeeklyCsmDemands(supabase, workspace.id);
   refresh();
   redirect(`/semana?message=${encodeURIComponent(`${added} tarefa(s) adicionada(s) para até 23/10.`)}`);
 }
