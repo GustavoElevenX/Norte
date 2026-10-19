@@ -1,5 +1,6 @@
 import { getWorkspace } from "@/lib/auth";
 import { weeklyCsmDemands } from "@/lib/weekly-csm-demands";
+import { isMissingTable } from "@/lib/supabase/schema-error";
 
 export const dayLabels = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"];
 
@@ -41,9 +42,10 @@ export async function getSchedule(dates: string[]) {
     supabase.from("calendar_events").select("*").eq("workspace_id", workspace.id).neq("status", "cancelled")
       .gte("starts_at", `${dates[0]}T00:00:00-03:00`).lt("starts_at", `${addDays(dates.at(-1)!, 1)}T00:00:00-03:00`),
   ]);
-  if (ruleError || exceptionError || eventError) throw new Error(ruleError?.message || exceptionError?.message || eventError?.message);
+  if (ruleError || exceptionError || (eventError && !isMissingTable(eventError))) throw new Error(ruleError?.message || exceptionError?.message || eventError?.message);
   return dates.map((date) => ({
     date,
+    calendarEnabled: !eventError,
     events: (events ?? []).filter((event) => localDate(new Date(event.starts_at), workspace.timezone) === date).sort((a, b) => a.starts_at.localeCompare(b.starts_at)),
     slots: (rules ?? []).filter((rule) => rule.weekday === isoWeekday(date) && rule.effective_from <= date).flatMap((rule) => {
       const exception = exceptions?.find((item) => item.rule_id === rule.id && item.occurs_on === date);

@@ -11,7 +11,7 @@ Aplicação do produto descrito em `CONTEXTO_CODEX_ASSISTENTE_EXECUTIVO.md`: aut
 
 1. Execute `npm install`.
 2. Copie `.env.example` para `.env.local` e preencha a URL e a chave pública/anon do Supabase. Não use service role key no navegador.
-3. No Supabase SQL Editor, execute `supabase/migrations/202610150001_initial.sql` e depois `supabase/migrations/202610150002_norte_seed.sql`, uma vez cada. A segunda migração cria área estratégica, contextos de demandas, agenda recorrente, log e função transacional de importação.
+3. No Supabase SQL Editor, execute as migrações em ordem: `202610150001_initial.sql`, `202610150002_norte_seed.sql`, `202610150003_calendar.sql`, `202610150004_assistant.sql` e `202610150005_performance.sql`. A segunda migração cria área estratégica, contextos de demandas, agenda recorrente, log e função transacional de importação. As três seguintes habilitam reservas de agenda, assistente, metas e indicadores. Publicar o código na Vercel não executa essas migrações automaticamente.
 4. Configure a URL local `http://localhost:3000` nas URLs permitidas do Supabase Auth. Se a confirmação de e-mail estiver ativa, confirme a conta antes de entrar.
 5. Execute `npm run dev` e abra `http://localhost:3000`.
 
