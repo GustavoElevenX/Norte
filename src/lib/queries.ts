@@ -1,6 +1,7 @@
 import { getWorkspace } from "@/lib/auth";
 import { cache } from "react";
 import { ensureWeeklyCsmDemands } from "@/lib/weekly-csm-import";
+import { ensureQueridoPudimPlan } from "@/lib/querido-pudim-import";
 
 export const getCompanies = cache(async function getCompanies() {
   const { supabase, workspace } = await getWorkspace();
@@ -26,6 +27,7 @@ export const getClients = cache(async function getClients() {
 export const getTasks = cache(async function getTasks() {
   const { supabase, workspace } = await getWorkspace();
   await ensureWeeklyCsmDemands(supabase, workspace.id);
+  await ensureQueridoPudimPlan(supabase, workspace.id);
   const { data, error } = await supabase.from("tasks").select("*").eq("workspace_id", workspace.id).order("created_at", { ascending: false });
   if (error) throw new Error(error.message);
   return data ?? [];
