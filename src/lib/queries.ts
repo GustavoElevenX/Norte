@@ -1,14 +1,13 @@
 import { getWorkspace } from "@/lib/auth";
 import { cache } from "react";
-import { ensureWeeklyCsmDemands } from "@/lib/weekly-csm-import";
-import { ensureQueridoPudimPlan } from "@/lib/querido-pudim-import";
 import { isMissingTable } from "@/lib/supabase/schema-error";
 
 export const getCompanies = cache(async function getCompanies() {
   const { supabase, workspace } = await getWorkspace();
   const { data, error } = await supabase.from("companies").select("*").eq("workspace_id", workspace.id).order("name");
   if (error) throw new Error(error.message);
-  return data ?? [];
+  return (data ?? []).map((company) => company.seed_key === "sobi" && company.name.toLocaleLowerCase("pt-BR") === "sobi"
+    ? { ...company, name: "SOBE" } : company);
 });
 
 export const getProjects = cache(async function getProjects() {
@@ -27,8 +26,6 @@ export const getClients = cache(async function getClients() {
 
 export const getTasks = cache(async function getTasks() {
   const { supabase, workspace } = await getWorkspace();
-  await ensureWeeklyCsmDemands(supabase, workspace.id);
-  await ensureQueridoPudimPlan(supabase, workspace.id);
   const { data, error } = await supabase.from("tasks").select("*").eq("workspace_id", workspace.id).order("created_at", { ascending: false });
   if (error) throw new Error(error.message);
   return data ?? [];

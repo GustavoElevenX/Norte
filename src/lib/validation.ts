@@ -50,6 +50,7 @@ export const taskSchema = z.object({
   client_id: optionalUuid,
   status: z.enum(["todo", "in_progress", "blocked", "done", "cancelled"]),
   priority: z.union([z.enum(["P1", "P2", "P3"]), z.literal("")]).transform((value) => value || null),
+  source_priority: z.union([z.enum(["P1", "P2", "P3", "P4"]), z.literal("")]).transform((value) => value || null),
   due_at: z.string(),
   estimated_minutes: z.string(),
 });

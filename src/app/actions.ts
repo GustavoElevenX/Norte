@@ -9,6 +9,11 @@ import { createClient } from "@/lib/supabase/server";
 import { clientSchema, companySchema, formString, projectSchema, taskSchema, uuid } from "@/lib/validation";
 import { validateNorteSeed } from "@/lib/norte-seed";
 import { ensureWeeklyCsmDemands } from "@/lib/weekly-csm-import";
+import { getSchedule, localDate, weekDates } from "@/lib/schedule";
+import { getTasks } from "@/lib/queries";
+import { getCompanies, getProjects } from "@/lib/queries";
+import { planWeek } from "@/lib/week-planner";
+import { buildOperationalAgenda, operationalProposalKey } from "@/lib/operational-agenda";
 
 function fail(path: string, message: string): never {
   redirect(`${path}?error=${encodeURIComponent(message)}`);
@@ -21,7 +26,35 @@ export async function importWeeklyCsmDemands() {
   const { supabase, workspace } = await getWorkspace();
   const added = await ensureWeeklyCsmDemands(supabase, workspace.id);
   refresh();
-  redirect(`/semana?message=${encodeURIComponent(`${added} tarefa(s) adicionada(s) para até 23/10.`)}`);
+  redirect(`/semana?message=${encodeURIComponent(`${added} demanda(s) CSM ausente(s) adicionada(s).`)}`);
+}
+export async function approveWeekPlan(form: FormData) {
+  const { supabase, workspace } = await getWorkspace();
+  const submitted = value(form, "proposal");
+  const dates = weekDates(localDate());
+  const [days, tasks] = await Promise.all([getSchedule(dates), getTasks()]);
+  if (!days[0]?.calendarEnabled) fail("/semana", "A migração de calendário ainda não foi aplicada.");
+  const current = planWeek(tasks, days, new Date()).items.map(({ taskId, startsAt, endsAt }) => ({ taskId, startsAt, endsAt }));
+  if (submitted !== JSON.stringify(current) || !current.length) fail("/semana", "A agenda mudou. Revise a nova prévia antes de aprovar.");
+  const { data, error } = await supabase.rpc("approve_week_plan", { p_workspace_id: workspace.id, p_items: current });
+  if (error) fail("/semana", error.message);
+  refresh();
+  redirect(`/semana?message=${encodeURIComponent(`${data} reserva(s) aprovada(s).`)}`);
+}
+export async function importOperationalAgenda(form: FormData) {
+  const { supabase, workspace } = await getWorkspace();
+  const [companies, projects, tasks] = await Promise.all([getCompanies(), getProjects(), getTasks()]);
+  const proposal = buildOperationalAgenda(companies, projects, tasks);
+  if (value(form, "proposal_key") !== operationalProposalKey(proposal)) fail("/semana", "Os dados mudaram. Confira a prévia novamente.");
+  if (proposal.issues.some((issue) => issue.startsWith("Operação ausente") || issue.startsWith("Projeto ou vínculo ausente") || issue.startsWith("Rotinas sobrepostas")))
+    fail("/semana", "Resolva os vínculos e horários em conflito antes de aplicar.");
+  const { data, error } = await supabase.rpc("import_operational_week", { p_workspace_id: workspace.id, p_version: proposal.source.meta.version,
+    p_days: proposal.days, p_tasks: proposal.tasks.map((item) => ({ source_key: item.source_key, title: item.title,
+      description: item.description, company_id: item.company_id, project_id: item.project_id, parent_key: item.parent_key,
+      estimated_minutes: item.estimated_minutes, source_priority: item.source_priority, due_at: item.due_at })) });
+  if (error) fail("/semana", error.message);
+  refresh();
+  redirect(`/semana?message=${encodeURIComponent(`Programação aplicada: ${data.days} dias e ${data.tasks} tarefas novas. Confira e aprove os horários de execução.`)}`);
 }
 export async function reserveTaskSlot(form: FormData) {
   const { supabase, workspace } = await getWorkspace();
@@ -33,8 +66,11 @@ export async function reserveTaskSlot(form: FormData) {
   const end = new Date(value(form, "ends_at"));
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end.getTime() - start.getTime() !== task.estimated_minutes * 60000)
     fail(`/tarefas/${id}`, "Horário ou duração inválidos.");
-  const { error } = await supabase.rpc("save_calendar_event", { p_workspace_id: workspace.id, p_event_id: null, p_event_type: "execution", p_title: task.title,
-    p_company_id: task.company_id, p_project_id: task.project_id, p_task_id: id, p_starts_at: start.toISOString(), p_ends_at: end.toISOString(), p_allow_protected_override: false });
+  const operational = (await getSchedule([localDate(start)])).some((day) => day.operational);
+  const { error } = operational
+    ? await supabase.rpc("approve_week_plan", { p_workspace_id: workspace.id, p_items: [{ taskId: id, startsAt: start.toISOString(), endsAt: end.toISOString() }] })
+    : await supabase.rpc("save_calendar_event", { p_workspace_id: workspace.id, p_event_id: null, p_event_type: "execution", p_title: task.title,
+      p_company_id: task.company_id, p_project_id: task.project_id, p_task_id: id, p_starts_at: start.toISOString(), p_ends_at: end.toISOString(), p_allow_protected_override: false });
   if (error) fail(`/tarefas/${id}`, error.message);
   refresh();
   redirect(`/tarefas/${id}?message=Bloco de execução reservado.`);
@@ -49,8 +85,12 @@ export async function saveAppointment(form: FormData) {
   const ends = fromFortalezaLocal(value(form, "ends_at"));
   if ((id && !uuid.safeParse(id).success) || (companyId && !uuid.safeParse(companyId).success) || !title || title.length > 240 || Number.isNaN(starts.getTime()) || Number.isNaN(ends.getTime()))
     fail("/semana", "Revise os dados do compromisso.");
-  const { error } = await supabase.rpc("save_calendar_event", { p_workspace_id: workspace.id, p_event_id: id || null, p_event_type: "appointment", p_title: title,
-    p_company_id: companyId, p_project_id: null, p_task_id: null, p_starts_at: starts.toISOString(), p_ends_at: ends.toISOString(), p_allow_protected_override: value(form, "approve_protected") === "yes" });
+  const operational = (await getSchedule([localDate(starts)])).some((day) => day.operational);
+  const { error } = operational
+    ? await supabase.rpc("save_operational_appointment", { p_workspace_id: workspace.id, p_event_id: id || null, p_title: title,
+      p_company_id: companyId, p_starts_at: starts.toISOString(), p_ends_at: ends.toISOString() })
+    : await supabase.rpc("save_calendar_event", { p_workspace_id: workspace.id, p_event_id: id || null, p_event_type: "appointment", p_title: title,
+      p_company_id: companyId, p_project_id: null, p_task_id: null, p_starts_at: starts.toISOString(), p_ends_at: ends.toISOString(), p_allow_protected_override: value(form, "approve_protected") === "yes" });
   if (error) fail("/semana", error.message);
   refresh();
   redirect("/semana?message=Compromisso salvo.");
@@ -181,7 +221,7 @@ export async function saveProject(form: FormData) {
 export async function saveTask(form: FormData) {
   const { supabase, workspace } = await getWorkspace();
   const id = value(form, "id");
-  const parsed = taskSchema.safeParse(Object.fromEntries(["title", "description", "company_id", "project_id", "client_id", "status", "priority", "due_at", "estimated_minutes"].map((key) => [key, value(form, key)])));
+  const parsed = taskSchema.safeParse(Object.fromEntries(["title", "description", "company_id", "project_id", "client_id", "status", "priority", "source_priority", "due_at", "estimated_minutes"].map((key) => [key, value(form, key)])));
   if (!parsed.success) fail(id ? `/tarefas/${id}` : "/tarefas", "Revise os campos da tarefa.");
   const { due_at, estimated_minutes, ...fields } = parsed.data;
   if (fields.client_id && !fields.company_id) fail(id ? `/tarefas/${id}` : "/tarefas", "Selecione a empresa do cliente.");
@@ -215,6 +255,22 @@ export async function completeTask(form: FormData) {
   const { data, error } = await supabase.from("tasks").update({ status: "done", completed_at: new Date().toISOString() }).eq("id", id).eq("workspace_id", workspace.id).neq("status", "done").select("id").single();
   if (error || !data) fail("/tarefas", error?.message || "Tarefa não encontrada.");
   refresh();
+}
+export async function setTaskStatus(form: FormData) {
+  const { supabase, workspace } = await getWorkspace();
+  const id = value(form, "id");
+  const status = value(form, "status");
+  if (!uuid.safeParse(id).success || !["todo", "in_progress", "blocked"].includes(status)) fail("/hoje", "Estado inválido.");
+  if (status === "blocked" || status === "todo") {
+    const { error } = await supabase.rpc("defer_task", { p_workspace_id: workspace.id, p_task_id: id, p_status: status });
+    if (error) fail("/hoje", error.message);
+  } else {
+    const { data, error } = await supabase.from("tasks").update({ status }).eq("id", id).eq("workspace_id", workspace.id)
+      .in("status", ["todo", "in_progress", "blocked"]).select("id").single();
+    if (error || !data) fail("/hoje", error?.message || "Tarefa não encontrada.");
+  }
+  refresh();
+  redirect(status === "todo" ? "/semana" : "/hoje");
 }
 
 export async function captureInbox(form: FormData) {

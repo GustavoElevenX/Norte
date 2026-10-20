@@ -10,7 +10,7 @@ const clock = (value: number) => `${String(Math.floor(value / 60)).padStart(2, "
 const localClock = (instant: string) => new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "America/Fortaleza" }).format(new Date(instant));
 
 export function matchesWindow(rule: WorkRule, task: CandidateTask) {
-  if (rule.mode === "unavailable") return false;
+  if (rule.mode === "unavailable" || rule.mode === "routine") return false;
   if (rule.mode === "flexible") return true;
   if (rule.project_id) return rule.project_id === task.project_id || rule.alternative_project_id === task.project_id;
   return Boolean(rule.company_id && rule.company_id === task.company_id);
@@ -29,10 +29,10 @@ function subtract(start: number, end: number, occupied: Array<[number, number]>)
 
 export function availableMinutes(day: ScheduleDay) {
   const occupied: Array<[number, number]> = [
-    ...day.slots.filter((slot) => slot.mode === "unavailable").map((slot) => [minutes(slot.starts_at), minutes(slot.ends_at)] as [number, number]),
+    ...day.slots.filter((slot) => slot.mode === "unavailable" || slot.mode === "routine").map((slot) => [minutes(slot.starts_at), minutes(slot.ends_at)] as [number, number]),
     ...day.events.map((event) => [minutes(localClock(event.starts_at)), minutes(localClock(event.ends_at))] as [number, number]),
   ];
-  return day.slots.filter((slot) => slot.mode !== "unavailable").reduce((sum, slot) =>
+  return day.slots.filter((slot) => slot.mode !== "unavailable" && slot.mode !== "routine").reduce((sum, slot) =>
     sum + subtract(minutes(slot.starts_at), minutes(slot.ends_at), occupied).reduce((free, [a, b]) => free + b - a, 0), 0);
 }
 
@@ -41,7 +41,7 @@ export function suggestTaskSlots(task: CandidateTask, days: ScheduleDay[], now =
   const suggestions: { date: string; start: string; end: string; startsAt: string; endsAt: string; ruleTitle: string; reason: string }[] = [];
   for (const day of days) {
     const occupied: Array<[number, number]> = [
-      ...day.slots.filter((slot) => slot.mode === "unavailable").map((slot) => [minutes(slot.starts_at), minutes(slot.ends_at)] as [number, number]),
+      ...day.slots.filter((slot) => slot.mode === "unavailable" || slot.mode === "routine").map((slot) => [minutes(slot.starts_at), minutes(slot.ends_at)] as [number, number]),
       ...day.events.map((event) => [minutes(localClock(event.starts_at)), minutes(localClock(event.ends_at))] as [number, number]),
     ];
     for (const rule of day.slots.filter((slot) => matchesWindow(slot, task))) {

@@ -12,6 +12,22 @@ Aplicação do produto descrito em `CONTEXTO_CODEX_ASSISTENTE_EXECUTIVO.md`: aut
 1. Execute `npm install`.
 2. Copie `.env.example` para `.env.local` e preencha a URL e a chave pública/anon do Supabase. Não use service role key no navegador.
 3. No Supabase SQL Editor, execute as migrações em ordem: `202610150001_initial.sql`, `202610150002_norte_seed.sql`, `202610150003_calendar.sql`, `202610150004_assistant.sql` e `202610150005_performance.sql`. A segunda migração cria área estratégica, contextos de demandas, agenda recorrente, log e função transacional de importação. As três seguintes habilitam reservas de agenda, assistente, metas e indicadores. Publicar o código na Vercel não executa essas migrações automaticamente.
+   Para usar **Importar agenda operacional** e **Planejamento para aprovação**, aplique depois `202610200001_week_planning.sql`. Antes, confira as migrações já registradas e faça backup do banco. Essa migração é aditiva: cria as colunas `source_priority` e `parent_task_id`, a tabela isolada `operational_day_plans` e as RPCs transacionais de importação, aprovação e adiamento. Não reescreve tarefas, prazos, regras ou reservas existentes. Não a executei neste ambiente.
+
+   Se aparecer `relation "public.calendar_events" does not exist`, a migração `202610150003_calendar.sql` ainda não foi aplicada integralmente nesse projeto Supabase (ou o SQL Editor está conectado a outro projeto). Confira sem alterar dados:
+
+   ```sql
+   select to_regclass('public.workspaces') as initial,
+          to_regclass('public.weekly_recurrence_rules') as norte_seed,
+          to_regclass('public.calendar_events') as calendar,
+          to_regclass('public.user_preferences') as assistant,
+          to_regclass('public.task_planning_snapshots') as performance,
+          to_regclass('public.operational_day_plans') as week_planning;
+   ```
+
+   Cada coluna `NULL` identifica uma migração ausente ou incompleta. Se todas estiverem preenchidas, confirme que a consulta e a execução da migração usam o mesmo projeto Supabase. A mensagem de pré-verificação de `202610200001_week_planning.sql` também lista os objetos ausentes por arquivo.
+
+   Aplique apenas as migrações ausentes, na ordem acima, e depois execute novamente `202610200001_week_planning.sql`. Confira antes se alguma migração anterior foi aplicada parcialmente; `202610150001` a `202610150005` não foram desenhadas para repetição cega. A migração nova verifica suas dependências antes de modificar o esquema e tolera uma segunda execução após uma tentativa parcial.
 4. Configure a URL local `http://localhost:3000` nas URLs permitidas do Supabase Auth. Se a confirmação de e-mail estiver ativa, confirme a conta antes de entrar.
 5. Execute `npm run dev` e abra `http://localhost:3000`.
 
@@ -53,8 +69,12 @@ Há um teste automatizado para o primeiro caso: configure `TEST_USER_A_EMAIL`, `
 
 ## Agenda
 
-**Hoje** mostra os blocos da data local em `America/Fortaleza`, a próxima rotina e tarefas reais. **Minha Semana** expande as regras recorrentes sem materializar tarefas diárias. Na semana inicial de vigência (15/10/2026), mostra a primeira semana completa a partir de 19/10 para apresentar todos os 39 blocos. A tabela de exceções por ocorrência existe no banco; edição de ocorrência e rearranjo por interface ainda não foram implementados.
+**Hoje** mostra os blocos da data local em `America/Fortaleza`, a próxima rotina e tarefas reais. **Minha Semana** expande as regras recorrentes sem materializar tarefas diárias e inclui sábado. Na semana inicial de vigência (15/10/2026), mostra a primeira semana completa a partir de 19/10. Ocorrências das regras históricas podem ser ajustadas por data; a programação operacional de 20–24/10 é guardada separadamente.
+
+**Planejamento da semana:** a página agora inclui sábado e calcula uma prévia de reservas para tarefas abertas com duração. Prazo e prioridade de origem CSM determinam a ordem; prioridades antigas aparecem com aviso da escala. A prévia respeita janelas compatíveis, indisponibilidades e compromissos existentes, e informa tarefas sem estimativa ou sem capacidade. Nada é gravado até clicar em **Aprovar e gravar estes horários**. O servidor recalcula a proposta no momento da aprovação e a RPC grava o lote em uma transação, usando as validações e restrições de calendário atuais. Se a agenda mudou, é necessário revisar outra prévia. Tarefas concluídas e bloqueadas não são planejadas. Reservas antigas sem confirmação não contam como trabalho concluído.
+
+O arquivo versionado [`data/norte-agenda-2026-10-20-v1.json`](./data/norte-agenda-2026-10-20-v1.json) contém 19 modelos recorrentes e 18 tarefas concretas para 20–24/10. Em **Minha Semana**, confira a prévia e clique em **Aplicar rotinas e tarefas após conferir**. A importação grava cinco dias operacionais e só as tarefas ausentes, identificadas por `source_key` ou título equivalente na mesma operação e projeto. Subtarefas são vinculadas a entregas existentes por chave quando disponíveis. Rotinas e intervalos protegidos substituem visualmente os blocos históricos apenas nessas cinco datas. Os horários de execução propostos pelo JSON ainda não são reservados nesse passo: após a importação, confira a distribuição recalculada e clique separadamente em **Aprovar e gravar estes horários**. Blocos passados permanecem pendentes de confirmação; tarefas incompletas entram na prévia futura. A ação **Adiar** cancela reservas futuras da tarefa e abre nova prévia sem apagar o histórico.
 
 ## Escopo pendente
 
-Motor de disponibilidade e reagendamento visual, IA, resumos, metas, performance, CRM, indicadores, financeiro e integrações estão planejados em [PLAN.md](./PLAN.md). Nenhuma dessas capacidades é simulada na interface atual.
+Dependências detalhadas entre tarefas, edição visual dos blocos operacionais e integração com calendário externo ainda não estão disponíveis. A execução de SQL e o teste de RLS com duas contas exigem um ambiente Supabase de teste. CRM, financeiro e integrações permanecem planejados em [PLAN.md](./PLAN.md).
